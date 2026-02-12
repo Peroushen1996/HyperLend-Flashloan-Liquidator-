@@ -1,0 +1,44 @@
+{
+  "perDebtToken": {
+    "0x747d0d4ba0a2083651513cd008deb95075683e82": {
+      "lastScannedBlock": 27064965
+    },
+    "0x45686a849e77ccb909f5d575f51c372bf26103d6": {
+      "lastScannedBlock": 27064965
+    },
+    "0xe16a14972bcde3f9bd637502c86384533f27da07": {
+      "lastScannedBlock": 27064965
+    },
+    "0x14e10fa4e016183a024c74acf539bb875c54e70c": {
+      "lastScannedBlock": 27064965
+    },
+    "0x1efa0f7a12cef73e23de30b7013a252231ea50f9": {
+      "lastScannedBlock": 27064965
+    },
+    "0x1ef897622d62335e7fc88fb0605fbba28ec0b01d": {
+      "lastScannedBlock": 27064965
+    },
+    "0x94c03ed369b706ad6957cf42afb0b5b02f924099": {
+      "lastScannedBlock": 27064965
+    },
+    "0x185697d814330430b8d4b3121fab9c811b59798d": {
+      "lastScannedBlock": 27064965
+    },
+    "0xd1b2c6be5ae55f3abfdde8070fd3322e87cfb895": {
+      "lastScannedBlock": 27064965
+    },
+    "0x64df524260fecd833258d26a3a7aeb415d20c512": {
+      "lastScannedBlock": 27064965
+    },
+    "0x3f6f19e098e3c0c996d11ce4d4816ac470c40708": {
+      "lastScannedBlock": 27064965
+    },
+    "0xd612513cb3b2c52abcd6d4b338374c09ada4657d": {
+      "lastScannedBlock": 27064965
+    },
+    "0x51af159cf648b59efc7de2830134fa5ca7109fdd": {
+      "lastScannedBlock": 27064965
+    }
+  },
+  "lastGlobalBlock": 27064965
+}

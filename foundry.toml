@@ -1,0 +1,55 @@
+[profile.default]
+via_ir = true
+optimizer = true
+optimizer_runs = 200
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.20"
+
+remappings = [
+    "@openzeppelin/=lib/openzeppelin-contracts/"
+]
+
+# Keystore configuration
+# Your keystores are stored in ~/.foundry/keystores/
+# Use --account flag when deploying instead of PRIVATE_KEY in .env
+
+[rpc_endpoints]
+hype = "https://rpc.hyperliquid.xyz/evm"
+
+
+# Fuzz testing configuration
+[fuzz]
+runs = 256                    # Number of fuzz runs per test
+max_test_rejects = 65536      # Maximum number of times to reject an input
+seed = '0x123456'             # Seed for reproducibility (optional)
+dictionary_weight = 40        # Dictionary weight for fuzzing
+include_storage = true        # Include storage in fuzzing
+include_push_bytes = true     # Include push bytes in fuzzing
+
+# Invariant testing configuration
+[invariant]
+runs = 256                    # Number of runs for invariant tests
+depth = 20                  # Number of calls made in each run
+fail_on_revert = false        # Continue on reverts (some reverts are expected)
+call_override = false       # Don't override external calls
+dictionary_weight = 80        # Higher dictionary weight for invariants
+include_storage = true        # Include storage in invariant testing
+include_push_bytes = true     # Include push bytes
+shrink_run_limit = 5000       # Max shrinking attempts
+
+# CI profile with more aggressive testing
+[profile.ci]
+fuzz = { runs = 10000 }
+invariant = { runs = 1000, depth = 50 }
+
+# Deep testing profile for comprehensive fuzzing
+[profile.deep]
+fuzz = { runs = 50000 }
+invariant = { runs = 5000, depth = 100 }
+
+
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+

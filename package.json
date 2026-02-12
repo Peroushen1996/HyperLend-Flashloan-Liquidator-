@@ -1,0 +1,23 @@
+{
+  "name": "bot",
+  "version": "1.0.0",
+  "description": "HyperLend Liquidation Bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node liquidator-bot.js",
+    "test": "node test-connection.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@aave/core-v3": "^1.19.3",
+    "axios": "^1.9.0",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.14.1",
+    "express": "^5.2.1",
+    "node-cron": "^4.0.6",
+    "nodemailer": "^8.0.1",
+    "ws": "^8.19.0"
+  }
+}
