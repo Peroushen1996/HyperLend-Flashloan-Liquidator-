@@ -1,6 +1,4 @@
-// bot/src/index.js - COMPLETE FIXED VERSION
-// All critical bugs fixed, properly integrated with optimized positions.js
-
+// bot/src/index.js
 require("dotenv").config();
 const axios = require("axios");
 const cron = require("node-cron");
@@ -9,12 +7,14 @@ const fs = require("fs");
 const path = require("path");
 
 // --------------------
-// Configuration
+// Tunables (in-code)
 // --------------------
 const CLOSE_FACTOR = 0.5;
-const FLASH_LOAN_FEE = 9;
-const MIN_LIQUIDATION_VALUE_USD = 10;
-const MIN_PROFIT_THRESHOLD_BPS = 100;
+const FLASH_LOAN_FEE = 9; // bps
+
+// If you don't have USD pricing wired yet, rely on sim/staticCall instead of this.
+const MIN_LIQUIDATION_VALUE_USD = 1; // placeholder
+const MIN_PROFIT_THRESHOLD_BPS = 1;
 
 const MAX_WALLETS_PER_CYCLE = 100;
 
@@ -24,47 +24,40 @@ const COOLDOWN_SUCCESS_MS = 24 * 60 * 60 * 1000;
 const MAX_RETRIES_PER_WALLET = 3;
 const RETRY_COOLDOWN_MS = 60 * 60 * 1000;
 
-const GAS_LIMIT_MULTIPLIER = 1.15;
+const GAS_LIMIT_MULTIPLIER = 1.3;
 
 const MAX_CONCURRENT_SIMS = 3;
 const MAX_CONCURRENT_SENDS = 1;
 
+// API timeouts
 const ROUTE_TIMEOUT_MS = 15000;
 const RPC_TIMEOUT_MS = 25000;
 
-const QUOTE_SIZE_FACTORS = [1.0, 0.95, 1.05, 0.90, 1.10];
+// Try a few size guesses for the router quote if your collateral estimate is off.
+const QUOTE_SIZE_FACTORS = [0.9, 1.0, 1.1];
 
 // --------------------
 // Imports
 // --------------------
-const PoolArtifact = require("@aave/core-v3/artifacts/contracts/protocol/pool/Pool.sol/Pool.json");
-
 const {
   getDetailedPositionFromAPI,
-  getDetailedPositionFromAPIWithTimeout,
   getLiquidatableWallets,
   getMarketMetaByUnderlying,
 } = require("./utils/positions");
 
-const { getGasStrategy } = require("./utils/gasStrategy");
-const { EventMonitor } = require("./utils/eventMonitor");
-
 // --------------------
 // State
 // --------------------
-let cachedWallet = null;
+let cachedWallet = null; // Wallet (NOT connected) after decrypt
 let cachedRouter = null;
 
-const cooldowns = new Map();
-const retryAttempts = new Map();
+const cooldowns = new Map(); // wallet -> cooldownUntilMs
+const retryAttempts = new Map(); // wallet -> attemptCount
 
 let activeSims = 0;
 let activeSends = 0;
 
 let RUNNING = false;
-
-const gasStrategy = getGasStrategy();
-let eventMonitor = null;
 
 const cycleStats = {
   processed: 0,
@@ -76,18 +69,19 @@ const cycleStats = {
   txFailed: 0,
 };
 
+// Minimal pool reads + AddressesProvider + Oracle
 const poolAbi = [
   "function getUserAccountData(address user) view returns (uint256,uint256,uint256,uint256,uint256,uint256)",
   "function ADDRESSES_PROVIDER() view returns (address)",
   "function getAddressesProvider() view returns (address)",
-  "function FLASHLOAN_PREMIUM_TOTAL() view returns (uint128)",
 ];
 const addressesProviderAbi = ["function getPriceOracle() view returns (address)"];
 const priceOracleAbi = ["function getAssetPrice(address asset) view returns (uint256)"];
+
 const liquidatorReadAbi = ["function liquidSwapRouter() view returns (address)"];
 
 // --------------------
-// RPC Setup
+// RPC rotation (hardened)
 // --------------------
 const HYPEREVM_NETWORK = new ethers.Network("hyperEvm", 999);
 
@@ -99,6 +93,7 @@ function parseRpcList() {
 
   const list = [process.env.SEND_RPC, ...fallbacks].filter(Boolean);
 
+  // de-dupe preserving order
   const seen = new Set();
   const out = [];
   for (const url of list) {
@@ -156,50 +151,6 @@ function isRetryableRpcError(e) {
   );
 }
 
-async function sendViaPrivateRelay(txData) {
-  if (String(process.env.ENABLE_PRIVATE_RELAY || "false").toLowerCase() !== "true") {
-    return null;
-  }
-  
-  const relayUrl = process.env.PRIVATE_RELAY_URL;
-  if (!relayUrl) return null;
-  
-  try {
-    if (!cachedWallet) {
-      console.log(`   ⚠️  Private relay: signer not initialized yet`);
-      return null;
-    }
-    
-    const signer = getSigner();
-    const signedTx = await signer.signTransaction(txData);
-    
-    const res = await axios.post(relayUrl, {
-      jsonrpc: "2.0",
-      method: "eth_sendRawTransaction",
-      params: [signedTx],
-      id: 1
-    }, { timeout: 5000 });
-    
-    if (res?.data?.result) {
-      console.log(`   ✅ Sent via private relay: ${res.data.result}`);
-      return res.data.result;
-    }
-  } catch (e) {
-    console.log(`   ⚠️  Private relay failed: ${e.message}, falling back to public`);
-  }
-  
-  return null;
-}
-
-async function antiPatternDelay() {
-  if (String(process.env.ENABLE_ANTI_PATTERN || "true").toLowerCase() !== "true") {
-    return;
-  }
-  
-  const delayMs = Math.floor(Math.random() * 500);
-  await new Promise(r => setTimeout(r, delayMs));
-}
-
 async function withRpcRetry(fn, tries = 3, label = "rpc") {
   let lastErr;
   for (let i = 0; i < tries; i++) {
@@ -230,10 +181,11 @@ async function withRpcRetry(fn, tries = 3, label = "rpc") {
 }
 
 // --------------------
-// Helpers
+// Helpers: signer / contracts
 // --------------------
 function getSigner() {
   if (!cachedWallet) return null;
+  // Always connect to current provider (important when rotating RPCs)
   return cachedWallet.connect(getProvider());
 }
 
@@ -241,32 +193,8 @@ function getPoolRead() {
   return new ethers.Contract(process.env.POOL_ADDRESS, poolAbi, getProvider());
 }
 
-async function measureBlockTime() {
-  try {
-    const latest = await getProvider().getBlockNumber();
-    const block1 = await getProvider().getBlock(latest);
-    
-    await new Promise(r => setTimeout(r, 10000));
-    
-    const latest2 = await getProvider().getBlockNumber();
-    const block2 = await getProvider().getBlock(latest2);
-    
-    const blocksDiff = latest2 - latest;
-    const timeDiff = block2.timestamp - block1.timestamp;
-    const avgBlockTime = timeDiff / blocksDiff;
-    
-    console.log(`   📊 HyperEVM average block time: ${avgBlockTime.toFixed(2)}s`);
-    console.log(`   📊 Blocks in 10s: ${blocksDiff}\n`);
-    
-    return avgBlockTime;
-  } catch (e) {
-    console.log(`   ⚠️  Could not measure block time: ${e.message}\n`);
-    return 1.0;
-  }
-}
-
 // --------------------
-// Price Oracle
+// Price oracle cache
 // --------------------
 let cachedOracle = null;
 let cachedOracleAt = 0;
@@ -279,6 +207,7 @@ async function getPriceOracle() {
   const pool = getPoolRead();
   let providerAddr = null;
 
+  // HyperLend is Aave-like; try both getters.
   try {
     providerAddr = await withRpcRetry(async () => pool.ADDRESSES_PROVIDER(), 2, "ADDRESSES_PROVIDER");
   } catch {}
@@ -310,34 +239,13 @@ function pow10(n) {
   return 10n ** BigInt(n);
 }
 
-let cachedFlashLoanFee = null;
-let cachedFlashLoanFeeAt = 0;
-
-async function getFlashLoanFeeBps() {
-  const ttl = 60 * 60 * 1000;
-  const now = Date.now();
-  
-  if (cachedFlashLoanFee !== null && now - cachedFlashLoanFeeAt < ttl) {
-    return cachedFlashLoanFee;
-  }
-  
-  try {
-    const pool = getPoolRead();
-    const feeBps = await withRpcRetry(
-      async () => pool.FLASHLOAN_PREMIUM_TOTAL(), 
-      2, 
-      "FLASHLOAN_PREMIUM_TOTAL"
-    );
-    
-    cachedFlashLoanFee = Number(feeBps);
-    cachedFlashLoanFeeAt = now;
-    console.log(`   ✅ Flash loan fee: ${cachedFlashLoanFee} bps`);
-    return cachedFlashLoanFee;
-  } catch {
-    return FLASH_LOAN_FEE;
-  }
-}
-
+/**
+ * Estimate seized collateral (raw units) for a given debtToCover (raw units),
+ * using on-chain prices + liquidation bonus from markets API (fallback to 5%).
+ *
+ * valueDebtBase = debtRaw * priceDebt / 10^debtDecimals
+ * collatRaw ~= valueDebtBase * 10^collatDecimals / priceCollat * bonus
+ */
 async function estimateCollateralInRaw(debtRaw, debtDec, debtAsset, collatDec, collateralAsset) {
   const oracle = await getPriceOracle();
   if (!oracle) return null;
@@ -351,20 +259,19 @@ async function estimateCollateralInRaw(debtRaw, debtDec, debtAsset, collatDec, c
 
   const collMeta = getMarketMetaByUnderlying?.(collateralAsset);
 
+  // Aave-style bonus is usually 10000 = no bonus, 10500 = +5%
   const bonusBps = BigInt(
     (collMeta && Number.isFinite(collMeta.liquidationBonusBps) && collMeta.liquidationBonusBps > 0)
       ? collMeta.liquidationBonusBps
       : 10500
   );
 
-  const debtValueInOracleUnits = (debtRaw * priceDebt) / pow10(debtDec);
-  
-  let collatRaw = (debtValueInOracleUnits * pow10(collatDec)) / priceCollat;
-  
+  const valueDebtBase = (debtRaw * priceDebt) / pow10(debtDec); // base currency wei
+  let collatRaw = (valueDebtBase * pow10(collatDec)) / priceCollat;
   collatRaw = (collatRaw * bonusBps) / 10000n;
 
-  collatRaw = (collatRaw * 102n) / 100n;
-  
+  // add a tiny buffer to reduce under-estimation risk
+  collatRaw = (collatRaw * 101n) / 100n; // +1%
   return collatRaw;
 }
 
@@ -380,12 +287,11 @@ console.log("PROFIT_RECEIVER :", process.env.PROFIT_RECEIVER || "MISSING");
 console.log("=================\n");
 
 // --------------------
-// Keystore
+// Keystore unlock
 // --------------------
 async function initializeSigner() {
+  // quick sanity: provider alive
   await withRpcRetry(async (p) => p.getBlockNumber(), 2, "rpc preflight");
-  
-  await measureBlockTime();
 
   while (!cachedWallet) {
     try {
@@ -436,8 +342,10 @@ async function initializeSigner() {
         checkDone();
       });
 
+      // Decrypt (no provider yet)
       cachedWallet = await ethers.Wallet.fromEncryptedJson(JSON.stringify(keystoreJson), password);
 
+      // Router cache (read-only via RPC retry)
       try {
         const liq = new ethers.Contract(process.env.LIQUIDATOR, liquidatorReadAbi, getProvider());
         cachedRouter = (await withRpcRetry(async () => liq.liquidSwapRouter(), 3, "read liquidSwapRouter")).toLowerCase();
@@ -474,11 +382,11 @@ async function isLiquidatableOnchain(user) {
 }
 
 // --------------------
-// Profit calculation
+// Profit calc (bps)
+// profit_bps = (amountOut - debt - fee) / debt * 10000
 // --------------------
-async function calculateProfitBps(amountOutBI, debtAmountBI) {
-  const feeBps = await getFlashLoanFeeBps();
-  const premiumBI = (debtAmountBI * BigInt(feeBps)) / 10000n;
+function calculateProfitBps(amountOutBI, debtAmountBI) {
+  const premiumBI = (debtAmountBI * BigInt(FLASH_LOAN_FEE)) / 10000n;
   const totalOwedBI = debtAmountBI + premiumBI;
   if (amountOutBI < totalOwedBI) return -10000;
   const profitBI = amountOutBI - totalOwedBI;
@@ -486,14 +394,14 @@ async function calculateProfitBps(amountOutBI, debtAmountBI) {
 }
 
 // --------------------
-// Transaction execution
+// Tx execution (sim + send) with concurrency gates
 // --------------------
 async function sendTxWithCalldata(user, collateral, debt, debtAmount, swapCalldata) {
+  // sim gate
   while (activeSims >= MAX_CONCURRENT_SIMS) {
     await new Promise((r) => setTimeout(r, 300));
   }
   activeSims++;
-  await antiPatternDelay();
 
   try {
     const signer = getSigner();
@@ -535,6 +443,7 @@ async function sendTxWithCalldata(user, collateral, debt, debtAmount, swapCallda
       return;
     }
 
+    // send gate
     while (activeSends >= MAX_CONCURRENT_SENDS) {
       await new Promise((r) => setTimeout(r, 500));
     }
@@ -543,31 +452,10 @@ async function sendTxWithCalldata(user, collateral, debt, debtAmount, swapCallda
     try {
       const gasLimit = (gasEstimate * BigInt(Math.round(GAS_LIMIT_MULTIPLIER * 100))) / 100n;
 
-      const feeData = await withRpcRetry(async (p) => p.getFeeData(), 2, "getFeeData");
-      const GAS_BOOST = 1.30;
-      
-      let maxPriorityFeePerGas, maxFeePerGas;
-      if (feeData.maxPriorityFeePerGas && feeData.maxFeePerGas) {
-        maxPriorityFeePerGas = (feeData.maxPriorityFeePerGas * BigInt(Math.round(GAS_BOOST * 100))) / 100n;
-        const baseFee = feeData.maxFeePerGas - feeData.maxPriorityFeePerGas;
-        maxFeePerGas = baseFee + maxPriorityFeePerGas;
-      } else {
-        maxFeePerGas = (feeData.gasPrice * BigInt(Math.round(GAS_BOOST * 100))) / 100n;
-      }
-      
-      console.log(`   ⛽ Gas: ${ethers.formatUnits(maxFeePerGas, "gwei")} gwei (+${Math.round((GAS_BOOST - 1) * 100)}% boost)`);
-
-      const txParams = { gasLimit };
-      if (maxPriorityFeePerGas) {
-        txParams.maxPriorityFeePerGas = maxPriorityFeePerGas;
-        txParams.maxFeePerGas = maxFeePerGas;
-      } else {
-        txParams.gasPrice = maxFeePerGas;
-      }
-
+      console.log(`   📤 Sending tx...`);
       const tx = await withRpcRetry(
         async () =>
-          contract.liquidateWithCalldata(user, collateral, debt, debtAmount, swapCalldata, txParams),
+          contract.liquidateWithCalldata(user, collateral, debt, debtAmount, swapCalldata, { gasLimit }),
         2,
         "sendTx"
       );
@@ -603,7 +491,7 @@ async function sendTxWithCalldata(user, collateral, debt, debtAmount, swapCallda
 }
 
 // --------------------
-// Main run loop
+// Main loop
 // --------------------
 async function run() {
   if (RUNNING) {
@@ -647,13 +535,7 @@ async function run() {
       try {
         console.log(`\n💰 Processing: ${addr} | HF=${wallet.health_rate}`);
 
-        const positions = await getDetailedPositionFromAPIWithTimeout(wallet);
-        if (!positions) {
-          console.log(`   ⚠️  Position API call timed out or failed, skipping`);
-          cooldowns.set(addr, Date.now() + RETRY_COOLDOWN_MS);
-          continue;
-        }
-        
+        const positions = await getDetailedPositionFromAPI(wallet);
         if (!positions?.supply?.length || !positions?.borrow?.length) {
           console.log(`   ⚠️  No supply/borrow positions found, skipping`);
           continue;
@@ -675,6 +557,7 @@ async function run() {
           })
           .sort((a, b) => b.humanAmount - a.humanAmount);
 
+        // Try multiple pairs until one sim passes (more robust than "largest token amount")
         const pairsToTry = [];
         for (const s of supplyCandidates.slice(0, 8)) {
           for (const b of borrowCandidates.slice(0, 8)) {
@@ -696,6 +579,7 @@ async function run() {
         }
 
         if (!sent) {
+          // cooldown so we don't hammer same wallet endlessly
           cooldowns.set(addr, Date.now() + RETRY_COOLDOWN_MS);
         }
       } catch (e) {
@@ -713,6 +597,9 @@ async function run() {
   }
 }
 
+/**
+ * Returns true if tx was sent (or confirmed).
+ */
 async function prepareAndSend(wallet, pair) {
   const user = wallet.wallet_address;
   const supply = pair[0];
@@ -720,24 +607,20 @@ async function prepareAndSend(wallet, pair) {
 
   console.log(`   💱 Pair: ${supply.symbol} (collateral) → ${borrow.symbol} (debt)`);
 
-  const [liquidatable, oracle] = await Promise.all([
-    isLiquidatableOnchain(user),
-    getPriceOracle()
-  ]);
-
+  // HF re-check right before acting
+  const liquidatable = await isLiquidatableOnchain(user);
   if (!liquidatable) {
     cycleStats.notLiquidatable++;
+    cooldowns.set(user, Date.now() + COOLDOWN_MS);
+    console.log(`   ⏭️  Skipping: HF >= 1 on-chain now`);
     return false;
   }
 
-  const [debtPrice, collateralPrice] = await Promise.all([
-    oracle.getAssetPrice(borrow.underlying),
-    oracle.getAssetPrice(supply.underlying)
-  ]);
-
+  // sizing (close factor)
   const debtAmountHuman = borrow.humanAmount;
   const debtAmountToRepay = Math.min(debtAmountHuman, debtAmountHuman * CLOSE_FACTOR);
 
+  // NOTE: this is still "token units", not USD. Keep for now.
   if (debtAmountToRepay < 1) {
     cycleStats.insufficientSize++;
     console.log(`   ⏭️  Skipping: debt too small (${debtAmountToRepay} ${borrow.symbol})`);
@@ -746,30 +629,7 @@ async function prepareAndSend(wallet, pair) {
 
   const debtAmountRawBI = ethers.parseUnits(debtAmountToRepay.toFixed(borrow.decimals), borrow.decimals);
 
-  try {
-    const oracle = await getPriceOracle();
-    if (oracle) {
-      const debtPrice = await withRpcRetry(
-        async () => oracle.getAssetPrice(borrow.underlying), 
-        2, 
-        "getAssetPrice(debt)"
-      );
-      
-      const valueInBase = (debtAmountRawBI * debtPrice) / pow10(borrow.decimals);
-      const valueUSD = Number(ethers.formatUnits(valueInBase, 8));
-      
-      console.log(`   💵 Debt value: ~$${valueUSD.toFixed(2)}`);
-      
-      if (valueUSD < MIN_LIQUIDATION_VALUE_USD) {
-        cycleStats.insufficientSize++;
-        console.log(`   ⏭️  Skipping: debt value $${valueUSD.toFixed(2)} < minimum $${MIN_LIQUIDATION_VALUE_USD}`);
-        return false;
-      }
-    }
-  } catch (e) {
-    console.log(`   ⚠️  Could not fetch USD value: ${e.message}`);
-  }
-
+  // Estimate seized collateral size (better than supply*closeFactor guess)
   let estimatedCollateralRaw = null;
   try {
     estimatedCollateralRaw = await estimateCollateralInRaw(
@@ -781,26 +641,22 @@ async function prepareAndSend(wallet, pair) {
     );
   } catch {}
 
+  // Cap estimate to user's aToken balance for this collateral
   if (estimatedCollateralRaw != null) {
     const supplyBal = BigInt(supply.amount);
     if (estimatedCollateralRaw > supplyBal) estimatedCollateralRaw = supplyBal;
   }
 
+  // Fallback: old guess if oracle unavailable
   if (estimatedCollateralRaw == null) {
     const collateralAmountToSeize = supply.humanAmount * CLOSE_FACTOR;
     estimatedCollateralRaw = ethers.parseUnits(collateralAmountToSeize.toFixed(supply.decimals), supply.decimals);
   }
 
-  const stillLiquidatable = await isLiquidatableOnchain(user);
-  if (!stillLiquidatable) {
-    console.log(`   ⏭️  Position recovered (front-run or price change)`);
-    cycleStats.notLiquidatable++;
-    return false;
-  }
-
   console.log(`   🔄 Quote: ${supply.symbol} -> ${borrow.symbol}`);
   console.log(`     est amountIn: ${estimatedCollateralRaw.toString()}`);
 
+  // Try a few quote size factors; accept the first that sim-passes.
   for (const factor of QUOTE_SIZE_FACTORS) {
     const amountIn = (estimatedCollateralRaw * BigInt(Math.round(factor * 1000))) / 1000n;
 
@@ -814,7 +670,7 @@ async function prepareAndSend(wallet, pair) {
           tokenIn: supply.underlying,
           tokenOut: borrow.underlying,
           amountIn: amountIn.toString(),
-          slippageTolerance: 100,
+          slippageTolerance: 100, // 1%
         },
         timeout: ROUTE_TIMEOUT_MS,
       });
@@ -834,6 +690,7 @@ async function prepareAndSend(wallet, pair) {
       continue;
     }
 
+    // router safety check (defensive)
     if (cachedRouter && executionTo && String(executionTo).toLowerCase() !== cachedRouter) {
       console.log(`   ⚠️  Skipping: execution.to mismatch`);
       console.log(`     execution.to: ${String(executionTo).toLowerCase()}`);
@@ -841,22 +698,19 @@ async function prepareAndSend(wallet, pair) {
       continue;
     }
 
-    const profitBps = await calculateProfitBps(amountOutRawBI, debtAmountRawBI);
+    // rough profit check (still rely on staticCall for the real gate)
+    const profitBps = calculateProfitBps(amountOutRawBI, debtAmountRawBI);
     console.log(`   💰 Profit estimate (factor=${factor}): ${profitBps} bps`);
 
     if (profitBps < MIN_PROFIT_THRESHOLD_BPS) {
       console.log(`   ⏭️  Skipping quote: profit ${profitBps} bps < threshold ${MIN_PROFIT_THRESHOLD_BPS} bps`);
-      
-      if (factor === 1.0) {
-        console.log(`   ⏭️  Base quote unprofitable, skipping remaining factors`);
-        break;
-      }
       continue;
     }
 
     console.log(`   ✅ Candidate ok (factor=${factor}) — sim/tx...`);
     await sendTxWithCalldata(user, supply.underlying, borrow.underlying, debtAmountRawBI, swapCalldata);
 
+    // If successful it sets a long cooldown.
     if ((cooldowns.get(user) || 0) > Date.now() + (COOLDOWN_SUCCESS_MS / 2)) {
       return true;
     }
@@ -866,61 +720,16 @@ async function prepareAndSend(wallet, pair) {
 }
 
 // --------------------
-// Main entry point
+// Entry
 // --------------------
 async function main() {
   await initializeSigner();
 
-  // Initialize event monitoring if available
-  if (EventMonitor) {
-    try {
-      eventMonitor = new EventMonitor(
-        getProvider(),
-        process.env.POOL_ADDRESS,
-        PoolArtifact.abi
-      );
-      
-      if (String(process.env.ENABLE_LIQUIDATION_WATCH || "true").toLowerCase() === "true") {
-        eventMonitor.startLiquidationWatch((event) => {
-          console.log(`   👁️  Liquidation detected, triggering scan...`);
-          setImmediate(() => run());
-        });
-      }
-      
-      if (String(process.env.ENABLE_BORROW_WATCH || "true").toLowerCase() === "true") {
-        eventMonitor.startBorrowWatch((event) => {
-          if (event.liquidatable) {
-            console.log(`   👁️  Risky borrow detected, triggering scan...`);
-            setImmediate(() => run());
-          }
-        });
-      }
-    } catch (e) {
-      console.log(`   ⚠️  Event monitor initialization failed: ${e.message}`);
-    }
-  }
-  
-  // Competitor analysis if available
-  if (gasStrategy && String(process.env.ENABLE_COMPETITOR_ANALYSIS || "true").toLowerCase() === "true") {
-    try {
-      setInterval(async () => {
-        await gasStrategy.analyzeCompetitorGas(getProvider(), process.env.POOL_ADDRESS);
-      }, 6 * 60 * 60 * 1000);
-      
-      await gasStrategy.analyzeCompetitorGas(getProvider(), process.env.POOL_ADDRESS);
-    } catch (e) {
-      console.log(`   ⚠️  Competitor analysis failed: ${e.message}`);
-    }
-  }
-
   // Run once immediately
   await run();
 
-  // Schedule from .env or default to every 5 minutes
-  const cronSchedule = process.env.SCAN_CRON || "*/5 * * * *";
-  console.log(`   ⏰ Scheduling scans: ${cronSchedule}\n`);
-  
-  cron.schedule(cronSchedule, async () => {
+  // Then schedule
+  cron.schedule("*/5 * * * *", async () => {
     await run();
   });
 }

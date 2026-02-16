@@ -33,6 +33,11 @@ contract Liquidator is Ownable, ReentrancyGuard {
         address _liquidSwapRouter,
         address _wHYPE
     ) Ownable(msg.sender) {
+        // ✅ FIX: Add zero address validation
+        require(_pool != address(0), "Invalid pool address");
+        require(_liquidSwapRouter != address(0), "Invalid router address");
+        require(_wHYPE != address(0), "Invalid wHYPE address");
+        
         pool = IPool(_pool);
         liquidSwapRouter = ILiquidSwap(_liquidSwapRouter);
         wHYPE = IWrappedHype(_wHYPE);
@@ -50,7 +55,8 @@ contract Liquidator is Ownable, ReentrancyGuard {
     ) external onlyOwner nonReentrant {
         if (_debtAmount == type(uint256).max) {
             address dToken = pool.getReserveData(_debt).variableDebtTokenAddress;
-            _debtAmount = IERC20(dToken).balanceOf(tx.origin) / 2;
+            // ✅ CRITICAL FIX: Use _user instead of tx.origin!
+            _debtAmount = IERC20(dToken).balanceOf(_user) / 2;
         }
 
         bytes memory params = abi.encode(LiquidationParams({
@@ -76,7 +82,8 @@ contract Liquidator is Ownable, ReentrancyGuard {
     ) external onlyOwner nonReentrant {
         if (_debtAmount == type(uint256).max) {
             address dToken = pool.getReserveData(_debt).variableDebtTokenAddress;
-            _debtAmount = IERC20(dToken).balanceOf(tx.origin) / 2;
+            // ✅ CRITICAL FIX: Use _user instead of tx.origin!
+            _debtAmount = IERC20(dToken).balanceOf(_user) / 2;
         }
 
         bytes memory params = abi.encode(LiquidationParams({
@@ -205,30 +212,37 @@ contract Liquidator is Ownable, ReentrancyGuard {
     }
 
     function rescueTokens(
-    address _token,
-    uint256 _amount,
-    bool _max,
-    address _to
-) external onlyOwner {
-    uint256 sendAmount;
+        address _token,
+        uint256 _amount,
+        bool _max,
+        address _to
+    ) external onlyOwner nonReentrant {
+        // ✅ FIX: Add recipient validation
+        require(_to != address(0), "Invalid recipient");
+        
+        uint256 sendAmount;
 
-    if (_token == address(0)) {
-        // Native HYPE / ETH
-        sendAmount = _max ? address(this).balance : _amount;
-        require(sendAmount > 0, "No native balance to rescue");
+        if (_token == address(0)) {
+            // Native HYPE / ETH
+            sendAmount = _max ? address(this).balance : _amount;
+            require(sendAmount > 0, "No native balance to rescue");
 
-        (bool success,) = payable(_to).call{value: sendAmount}("");
-        require(success, "Native transfer failed");
+            // ✅ FIX: Emit event before external call (better practice)
+            emit ProfitSent(address(0), sendAmount, _to);
+            
+            (bool success,) = payable(_to).call{value: sendAmount}("");
+            require(success, "Native transfer failed");
+        } else {
+            // ERC20 token
+            sendAmount = _max ? IERC20(_token).balanceOf(address(this)) : _amount;
+            require(sendAmount > 0, "No token balance to rescue");
 
-        emit ProfitSent(address(0), sendAmount, _to);
-    } else {
-        // ERC20 token
-        sendAmount = _max ? IERC20(_token).balanceOf(address(this)) : _amount;
-        require(sendAmount > 0, "No token balance to rescue");
-
-        IERC20(_token).safeTransfer(_to, sendAmount);
-        emit ProfitSent(_token, sendAmount, _to);
+            // ✅ FIX: Emit event before transfer
+            emit ProfitSent(_token, sendAmount, _to);
+            
+            IERC20(_token).safeTransfer(_to, sendAmount);
+        }
     }
-}
-receive() external payable {}
+    
+    receive() external payable {}
 }

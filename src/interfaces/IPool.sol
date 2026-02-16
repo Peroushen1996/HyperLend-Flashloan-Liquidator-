@@ -7,7 +7,7 @@ import {DataTypes} from "./DataTypes.sol";
 /**
  * @title IPool
  * @author Aave
- * @notice Defines the basic interface for an Aave Pool.
+ * @notice Defines the complete interface for an Aave Pool needed for liquidations.
  */
 interface IPool {
 
@@ -103,4 +103,57 @@ interface IPool {
      * @return The address of the PoolAddressesProvider
      */
     function ADDRESSES_PROVIDER() external view returns (IPoolAddressesProvider);
+
+    // ========================================
+    // ✅ ADDED - CRITICAL MISSING FUNCTIONS
+    // ========================================
+
+    /**
+     * @notice Returns the user account data across all the reserves
+     * @param user The address of the user
+     * @return totalCollateralBase The total collateral of the user in the base currency used by the price feed
+     * @return totalDebtBase The total debt of the user in the base currency used by the price feed
+     * @return availableBorrowsBase The borrowing power left of the user in the base currency used by the price feed
+     * @return currentLiquidationThreshold The liquidation threshold of the user
+     * @return ltv The loan to value of The user
+     * @return healthFactor The current health factor of the user
+     */
+    function getUserAccountData(address user)
+        external
+        view
+        returns (
+            uint256 totalCollateralBase,
+            uint256 totalDebtBase,
+            uint256 availableBorrowsBase,
+            uint256 currentLiquidationThreshold,
+            uint256 ltv,
+            uint256 healthFactor
+        );
+
+    /**
+     * @notice Returns the PoolAddressesProvider connected to this contract (alternative getter)
+     * @return The address of the PoolAddressesProvider
+     * @dev Some Aave forks use this instead of ADDRESSES_PROVIDER()
+     */
+    function getAddressesProvider() external view returns (address);
+
+    /**
+     * @notice Returns the fee applied to a flashloan
+     * @return The flashloan fee, expressed in bps (basis points)
+     * @dev HyperLend/Aave V3 uses this to get the flash loan premium (typically 9 bps = 0.09%)
+     */
+    function FLASHLOAN_PREMIUM_TOTAL() external view returns (uint128);
+
+    /**
+     * @notice Returns the maximum number of reserves supported by the Pool
+     * @return The maximum number of reserves
+     * @dev Useful for validation and limits
+     */
+    function MAX_NUMBER_RESERVES() external view returns (uint16);
+
+    /**
+     * @notice Returns the percentage of available liquidity that can be borrowed at once at stable rate
+     * @return The max stable rate borrow size percent
+     */
+    function MAX_STABLE_RATE_BORROW_SIZE_PERCENT() external view returns (uint256);
 }

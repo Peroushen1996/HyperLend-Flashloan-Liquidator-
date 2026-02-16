@@ -9,9 +9,10 @@ out/
 
 # Docs
 docs/
-password/
+password
 
 # Dotenv file
 .env
+.env.backup
 
 node_modules/
