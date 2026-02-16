@@ -10,7 +10,6 @@ import {DataTypes} from "./DataTypes.sol";
  * @notice Defines the complete interface for an Aave Pool needed for liquidations.
  */
 interface IPool {
-
     /**
      * @dev Emitted on flashLoan()
      * @param target The address of the flash loan receiver contract

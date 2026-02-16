@@ -117,7 +117,12 @@ contract LiquidatorTest is Test {
     /* ========== EVENTS ========== */
     event ProfitSent(address indexed token, uint256 amount, address indexed recipient);
     event LiquidationExecuted(
-        address indexed user, address indexed collateral, address debt, uint256 debtAmount, uint256 profit, bool usedCalldataPath
+        address indexed user,
+        address indexed collateral,
+        address debt,
+        uint256 debtAmount,
+        uint256 profit,
+        bool usedCalldataPath
     );
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
@@ -473,9 +478,7 @@ contract LiquidatorTest is Test {
         vm.deal(address(liquidator), initialBalance + 1 ether);
 
         assertEq(
-            address(liquidator).balance,
-            initialBalance + 1 ether,
-            "Liquidator should be able to receive native HYPE"
+            address(liquidator).balance, initialBalance + 1 ether, "Liquidator should be able to receive native HYPE"
         );
     }
 

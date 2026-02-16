@@ -28,16 +28,12 @@ contract Liquidator is Ownable, ReentrancyGuard {
     );
     event SwapExecutionFailed(bytes revertReason);
 
-    constructor(
-        address _pool,
-        address _liquidSwapRouter,
-        address _wHYPE
-    ) Ownable(msg.sender) {
+    constructor(address _pool, address _liquidSwapRouter, address _wHYPE) Ownable(msg.sender) {
         // ✅ FIX: Add zero address validation
         require(_pool != address(0), "Invalid pool address");
         require(_liquidSwapRouter != address(0), "Invalid router address");
         require(_wHYPE != address(0), "Invalid wHYPE address");
-        
+
         pool = IPool(_pool);
         liquidSwapRouter = ILiquidSwap(_liquidSwapRouter);
         wHYPE = IWrappedHype(_wHYPE);
@@ -59,15 +55,17 @@ contract Liquidator is Ownable, ReentrancyGuard {
             _debtAmount = IERC20(dToken).balanceOf(_user) / 2;
         }
 
-        bytes memory params = abi.encode(LiquidationParams({
-            user: _user,
-            collateral: _collateral,
-            debtToCover: _debtAmount,
-            hops: _hops,
-            tokens: _tokens,
-            minAmountOut: _minAmountOut,
-            swapCalldata: ""
-        }));
+        bytes memory params = abi.encode(
+            LiquidationParams({
+                user: _user,
+                collateral: _collateral,
+                debtToCover: _debtAmount,
+                hops: _hops,
+                tokens: _tokens,
+                minAmountOut: _minAmountOut,
+                swapCalldata: ""
+            })
+        );
 
         pool.flashLoanSimple(address(this), _debt, _debtAmount, params, 0);
     }
@@ -86,15 +84,17 @@ contract Liquidator is Ownable, ReentrancyGuard {
             _debtAmount = IERC20(dToken).balanceOf(_user) / 2;
         }
 
-        bytes memory params = abi.encode(LiquidationParams({
-            user: _user,
-            collateral: _collateral,
-            debtToCover: _debtAmount,
-            hops: new ILiquidSwap.Swap[][](0),
-            tokens: new address[](0),
-            minAmountOut: 0,
-            swapCalldata: _swapCalldata
-        }));
+        bytes memory params = abi.encode(
+            LiquidationParams({
+                user: _user,
+                collateral: _collateral,
+                debtToCover: _debtAmount,
+                hops: new ILiquidSwap.Swap[][](0),
+                tokens: new address[](0),
+                minAmountOut: 0,
+                swapCalldata: _swapCalldata
+            })
+        );
 
         pool.flashLoanSimple(address(this), _debt, _debtAmount, params, 0);
     }
@@ -163,11 +163,10 @@ contract Liquidator is Ownable, ReentrancyGuard {
             }
 
             try liquidSwapRouter.executeMultiHopSwap(
-                liq.tokens,
-                collateralBalance,
-                liq.minAmountOut,
-                liq.hops
-            ) returns (uint256) {
+                liq.tokens, collateralBalance, liq.minAmountOut, liq.hops
+            ) returns (
+                uint256
+            ) {
                 success = true;
             } catch (bytes memory err) {
                 success = false;
@@ -200,26 +199,16 @@ contract Liquidator is Ownable, ReentrancyGuard {
         }
 
         emit LiquidationExecuted(
-            liq.user,
-            liq.collateral,
-            debtAsset,
-            liq.debtToCover,
-            profit,
-            liq.swapCalldata.length > 0
+            liq.user, liq.collateral, debtAsset, liq.debtToCover, profit, liq.swapCalldata.length > 0
         );
 
         return true;
     }
 
-    function rescueTokens(
-        address _token,
-        uint256 _amount,
-        bool _max,
-        address _to
-    ) external onlyOwner nonReentrant {
+    function rescueTokens(address _token, uint256 _amount, bool _max, address _to) external onlyOwner nonReentrant {
         // ✅ FIX: Add recipient validation
         require(_to != address(0), "Invalid recipient");
-        
+
         uint256 sendAmount;
 
         if (_token == address(0)) {
@@ -229,7 +218,7 @@ contract Liquidator is Ownable, ReentrancyGuard {
 
             // ✅ FIX: Emit event before external call (better practice)
             emit ProfitSent(address(0), sendAmount, _to);
-            
+
             (bool success,) = payable(_to).call{value: sendAmount}("");
             require(success, "Native transfer failed");
         } else {
@@ -239,10 +228,10 @@ contract Liquidator is Ownable, ReentrancyGuard {
 
             // ✅ FIX: Emit event before transfer
             emit ProfitSent(_token, sendAmount, _to);
-            
+
             IERC20(_token).safeTransfer(_to, sendAmount);
         }
     }
-    
+
     receive() external payable {}
 }

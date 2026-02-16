@@ -16,3 +16,4 @@ password
 .env.backup
 
 node_modules/
+.borrow-scan-state.json

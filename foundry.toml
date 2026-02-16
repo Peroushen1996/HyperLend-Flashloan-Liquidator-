@@ -11,6 +11,10 @@ remappings = [
     "@openzeppelin/=lib/openzeppelin-contracts/"
 ]
 
+[lint]
+severity = ["high"]
+exclude_lints = ["unsafe-typecast", "erc20-unchecked-transfer"]
+lint_on_build = false
 # Keystore configuration
 # Your keystores are stored in ~/.foundry/keystores/
 # Use --account flag when deploying instead of PRIVATE_KEY in .env
